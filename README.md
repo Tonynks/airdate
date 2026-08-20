@@ -66,3 +66,7 @@ and you can keep logging in with the same password as before.
   rate limits.
 - To change the port, edit the left side of `ports:` in docker-compose.yml
   (e.g. `"3210:3000"`).
+
+## PLEASE CONSIDER DONATING
+Times are tough right now so any help would be appreciated.   Thank you!
+https://donate.tonystegall.net
