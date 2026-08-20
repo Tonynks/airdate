@@ -260,6 +260,22 @@ input {
   font-size: 0.85rem;
 }
 #new-account-username:focus, #new-account-password:focus { outline: none; border-color: var(--amber); }
+
+.push-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+#push-time-input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+}
+#push-time-input:focus { outline: none; border-color: var(--amber); }
 .tab {
   background: transparent;
   color: var(--muted);

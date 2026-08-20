@@ -6,7 +6,9 @@
 <title>AIRDATE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=36">
+<link rel="stylesheet" href="style.css?v=37">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0e1015">
 </head>
 <body data-airdate-version="7">
 
@@ -126,6 +128,17 @@
       <div id="accounts-list" class="accounts-list"></div>
 
       <div class="accounts-add">
+        <h3>Daily digest notifications</h3>
+        <p class="empty-note" id="push-status-note">A morning notification listing what airs today.</p>
+        <div id="push-controls" class="push-controls">
+          <input id="push-time-input" type="time" value="08:00">
+          <button id="push-enable-btn" class="btn-primary">Enable</button>
+          <button id="push-disable-btn" class="btn-ghost small hidden">Disable</button>
+        </div>
+        <p id="push-error" class="error hidden"></p>
+      </div>
+
+      <div class="accounts-add">
         <h3>Change your password</h3>
         <p class="empty-note">Only affects the account you're currently logged in as.</p>
         <input id="change-pw-current" type="password" placeholder="Current password" autocomplete="current-password">
@@ -157,6 +170,6 @@
     </div>
   </div>
 
-<script src="app.js?v=36"></script>
+<script src="app.js?v=37"></script>
 </body>
 </html>

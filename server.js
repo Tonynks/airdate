@@ -3,6 +3,7 @@ const fs = require('fs');
 const express = require('express');
 const cookieSession = require('cookie-session');
 const bcrypt = require('bcryptjs');
+const webpush = require('web-push');
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const APP_PASSWORD = process.env.APP_PASSWORD || 'changeme'; // used only for first-run migration, see below
@@ -10,6 +11,9 @@ const ACCOUNT_NAME = process.env.ACCOUNT_NAME || 'tvman'; // ditto
 const SESSION_SECRET = process.env.SESSION_SECRET || 'please-change-this-secret';
 const PORT = process.env.PORT || 3000;
 const TMDB_BASE = 'https://api.themoviedb.org/3';
+// Web Push requires a contact address in case a push service needs to reach
+// the sender — doesn't need to be a real monitored inbox, just a valid one.
+const PUSH_CONTACT_EMAIL = process.env.PUSH_CONTACT_EMAIL || 'admin@example.com';
 
 if (!TMDB_API_KEY) {
   console.warn('WARNING: TMDB_API_KEY is not set. Search and calendar will fail until it is.');
@@ -20,7 +24,80 @@ const DATA_DIR = path.join(__dirname, 'data');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const LEGACY_LIBRARY_FILE = path.join(DATA_DIR, 'library.json'); // pre-accounts single-library format
 const NETWORK_LOGO_CACHE_FILE = path.join(DATA_DIR, 'network-logos.json');
+const VAPID_KEYS_FILE = path.join(DATA_DIR, 'vapid-keys.json');
+const PUSH_SUBS_FILE = path.join(DATA_DIR, 'push-subscriptions.json');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// ---------- Web Push setup ----------
+// VAPID keys identify this server to push services (FCM, Mozilla autopush,
+// etc.) — generated once and persisted, no external account/signup needed.
+function loadOrCreateVapidKeys() {
+  if (fs.existsSync(VAPID_KEYS_FILE)) {
+    return JSON.parse(fs.readFileSync(VAPID_KEYS_FILE, 'utf8'));
+  }
+  const keys = webpush.generateVAPIDKeys();
+  fs.writeFileSync(VAPID_KEYS_FILE, JSON.stringify(keys, null, 2));
+  console.log('Generated new VAPID keys for push notifications.');
+  return keys;
+}
+const VAPID_KEYS = loadOrCreateVapidKeys();
+webpush.setVapidDetails(`mailto:${PUSH_CONTACT_EMAIL}`, VAPID_KEYS.publicKey, VAPID_KEYS.privateKey);
+
+function readPushSubs() {
+  if (!fs.existsSync(PUSH_SUBS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(PUSH_SUBS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+function writePushSubs(data) {
+  fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify(data, null, 2));
+}
+
+function getUserPushSettings(userId) {
+  const all = readPushSubs();
+  return all[userId] || { enabled: false, time: '08:00', timezone: null, last_sent_date: null, subscriptions: [] };
+}
+// Adds (or updates, if the same endpoint already exists) a subscription for
+// this account, and sets the digest time/timezone from whichever device
+// just subscribed — last one to (re)subscribe wins for scheduling purposes,
+// since all of an account's devices share one digest time.
+function addPushSubscription(userId, subscription, timezone, time) {
+  const all = readPushSubs();
+  const existing = all[userId] || { enabled: false, time: '08:00', timezone: null, last_sent_date: null, subscriptions: [] };
+  existing.enabled = true;
+  existing.timezone = timezone || existing.timezone;
+  if (time) existing.time = time;
+  existing.subscriptions = existing.subscriptions.filter((s) => s.endpoint !== subscription.endpoint);
+  existing.subscriptions.push({ ...subscription, added_at: new Date().toISOString() });
+  all[userId] = existing;
+  writePushSubs(all);
+}
+function removePushSubscription(userId, endpoint) {
+  const all = readPushSubs();
+  const existing = all[userId];
+  if (!existing) return;
+  existing.subscriptions = existing.subscriptions.filter((s) => s.endpoint !== endpoint);
+  if (existing.subscriptions.length === 0) existing.enabled = false;
+  all[userId] = existing;
+  writePushSubs(all);
+}
+function disableUserPush(userId) {
+  const all = readPushSubs();
+  if (!all[userId]) return;
+  all[userId].enabled = false;
+  all[userId].subscriptions = [];
+  writePushSubs(all);
+}
+function updatePushTime(userId, time) {
+  const all = readPushSubs();
+  if (!all[userId]) return false;
+  all[userId].time = time;
+  writePushSubs(all);
+  return true;
+}
+
 
 function libraryPathFor(userId) {
   return path.join(DATA_DIR, `library-${userId}.json`);
@@ -642,6 +719,49 @@ app.post('/api/change-password', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Push notifications ----
+app.get('/api/push/vapid-public-key', requireAuth, (req, res) => {
+  res.json({ publicKey: VAPID_KEYS.publicKey });
+});
+
+app.get('/api/push/status', requireAuth, (req, res) => {
+  const settings = getUserPushSettings(req.userId);
+  res.json({ enabled: settings.enabled, time: settings.time, device_count: settings.subscriptions.length });
+});
+
+// Subscribes this device to the daily digest. `subscription` is the raw
+// PushSubscription object from the browser; `timezone` is the browser's own
+// IANA zone (e.g. "America/Chicago") so the digest fires at the right local
+// time regardless of what timezone the server itself is running in.
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const { subscription, timezone, time } = req.body || {};
+  if (!subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: 'subscription is required' });
+  }
+  if (time && !/^\d{2}:\d{2}$/.test(time)) {
+    return res.status(400).json({ error: 'time must be in HH:MM format' });
+  }
+  addPushSubscription(req.userId, subscription, timezone, time);
+  res.json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  const { endpoint } = req.body || {};
+  if (endpoint) removePushSubscription(req.userId, endpoint);
+  else disableUserPush(req.userId);
+  res.json({ ok: true });
+});
+
+app.post('/api/push/update-time', requireAuth, (req, res) => {
+  const { time } = req.body || {};
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) {
+    return res.status(400).json({ error: 'time must be in HH:MM format' });
+  }
+  const ok = updatePushTime(req.userId, time);
+  if (!ok) return res.status(400).json({ error: 'not currently subscribed' });
+  res.json({ ok: true });
+});
+
 // ---- Search (TV + Movie) ----
 app.get('/api/search', requireAuth, async (req, res) => {
   const q = (req.query.q || '').trim();
@@ -1105,9 +1225,10 @@ app.post('/api/watched', requireAuth, (req, res) => {
 // Returns the next upcoming episode (TV) or release (movie) for everything
 // in the library, from today onward — this is the whole feed for the
 // Upcoming tab, sorted chronologically.
-app.get('/api/upcoming', requireAuth, async (req, res) => {
-  const today = clientToday(req);
-  const items = readLibrary(req.userId).items.filter((i) => i.status !== 'stopped');
+// Core computation shared by the /api/upcoming route and the daily digest
+// scheduler, so both always agree on exactly what's "upcoming" for a user.
+async function computeUpcomingEvents(userId, today) {
+  const items = readLibrary(userId).items.filter((i) => i.status !== 'stopped');
   const events = [];
 
   await mapWithConcurrency(items, 6, async (item) => {
@@ -1172,6 +1293,12 @@ app.get('/api/upcoming', requireAuth, async (req, res) => {
   });
 
   events.sort((a, b) => a.date.localeCompare(b.date));
+  return events;
+}
+
+app.get('/api/upcoming', requireAuth, async (req, res) => {
+  const today = clientToday(req);
+  const events = await computeUpcomingEvents(req.userId, today);
   res.json({ upcoming: events });
 });
 
@@ -1180,5 +1307,92 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// ---------- Daily digest scheduler ----------
+// Gets the current date/time as the user actually sees it, in their own
+// timezone — captured from their browser when they subscribed, since the
+// server itself could be running in any timezone.
+function getLocalTimeParts(timezone) {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone || 'UTC',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (type) => (parts.find((p) => p.type === type) || {}).value;
+  // Intl can format midnight as "24:00" instead of "00:00" — normalize.
+  const hour = get('hour') === '24' ? '00' : get('hour');
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, time: `${hour}:${get('minute')}` };
+}
+function hmToMinutes(hm) {
+  const [h, m] = hm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function buildDigestMessage(events) {
+  const titles = events.map((e) => e.title);
+  if (titles.length === 0) return null;
+  const body = titles.length <= 3
+    ? titles.join(', ')
+    : `${titles.slice(0, 3).join(', ')} and ${titles.length - 3} more`;
+  return {
+    title: `${titles.length} show${titles.length === 1 ? '' : 's'} air${titles.length === 1 ? 's' : ''} today`,
+    body,
+  };
+}
+
+async function sendDigestToUser(userId, settings, todayLocal) {
+  try {
+    const events = await computeUpcomingEvents(userId, todayLocal);
+    const todayEvents = events.filter((e) => e.date === todayLocal);
+    const message = buildDigestMessage(todayEvents);
+    if (message) {
+      const payload = JSON.stringify({ title: message.title, body: message.body, url: '/' });
+      for (const sub of settings.subscriptions) {
+        try {
+          await webpush.sendNotification(sub, payload);
+        } catch (err) {
+          if (err.statusCode === 404 || err.statusCode === 410) {
+            removePushSubscription(userId, sub.endpoint); // no longer valid on the browser's end
+          } else {
+            console.error(`Push send failed for account ${userId}:`, err.message);
+          }
+        }
+      }
+    }
+  } finally {
+    // Mark as checked today regardless of outcome, so this account isn't
+    // re-evaluated every few minutes for the rest of the day.
+    const all = readPushSubs();
+    if (all[userId]) {
+      all[userId].last_sent_date = todayLocal;
+      writePushSubs(all);
+    }
+  }
+}
+
+const DIGEST_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const DIGEST_WINDOW_MINUTES = 10; // must be >= the check interval, in minutes, so no one gets skipped between checks
+
+async function runDigestCheck() {
+  const all = readPushSubs();
+  for (const [userId, settings] of Object.entries(all)) {
+    if (!settings.enabled || !settings.subscriptions || settings.subscriptions.length === 0) continue;
+    if (!settings.timezone) continue;
+    const local = getLocalTimeParts(settings.timezone);
+    if (settings.last_sent_date === local.date) continue; // already handled today
+    const nowMin = hmToMinutes(local.time);
+    const targetMin = hmToMinutes(settings.time || '08:00');
+    if (nowMin >= targetMin && nowMin < targetMin + DIGEST_WINDOW_MINUTES) {
+      await sendDigestToUser(userId, settings, local.date).catch((err) => {
+        console.error(`Digest send failed for account ${userId}:`, err.message);
+      });
+    }
+  }
+}
+setInterval(() => {
+  runDigestCheck().catch((err) => console.error('Digest scheduler error:', err.message));
+}, DIGEST_CHECK_INTERVAL_MS);
 
 app.listen(PORT, () => console.log(`airdate listening on :${PORT}`));

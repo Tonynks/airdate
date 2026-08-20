@@ -48,6 +48,14 @@ and you can keep logging in with the same password as before.
 - **Library** — your full collection, with per-show detail (season/episode
   breakdown, synopsis, stills), pause/resume tracking, and removal
 - **Import** — bring in your watched history from a TV Time data export
+- **Push notifications** — an optional daily digest ("3 shows air today")
+  sent to your phone/browser at a time you choose, per account. Enable it
+  from the Accounts menu. Requires HTTPS (already true if you're using a
+  Cloudflare tunnel or similar) — won't work over plain `http://` LAN
+  access, since browsers require a secure context for push. On iPhone, add
+  the site to your Home Screen first (Share → Add to Home Screen), then
+  enable notifications from there — this is an Apple requirement, not
+  something this app can work around.
 
 ## Notes
 

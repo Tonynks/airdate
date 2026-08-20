@@ -1,4 +1,4 @@
-const AIRDATE_VERSION = 36;
+const AIRDATE_VERSION = 37;
 console.log('AIRDATE frontend v' + AIRDATE_VERSION);
 
 const state = {
@@ -120,6 +120,7 @@ async function openAccountsModal() {
   $('.accounts-add-section').classList.toggle('hidden', !state.isAdmin);
   $('#accounts-modal').classList.remove('hidden');
   await renderAccountsList();
+  refreshPushStatus();
 }
 
 async function renderAccountsList() {
@@ -1149,6 +1150,118 @@ $('#import-file').addEventListener('change', async (e) => {
     title.textContent = 'Import failed';
     body.innerHTML = `<p class="empty-note">Something went wrong: ${escapeHtml(err.message)}. Check the container logs (docker logs airdate) and try again \u2014 re-running is safe, nothing gets duplicated.</p>`;
     closeBtn.classList.remove('hidden');
+  }
+});
+
+// ---------- Push notifications ----------
+// Registered once at load, independent of login state — the browser just
+// needs the worker on file before a subscription can be created.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch((err) => {
+    console.error('Service worker registration failed:', err);
+  });
+}
+
+// Converts the VAPID public key (base64url, as the server hands it out)
+// into the raw byte array pushManager.subscribe() actually wants.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const output = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) output[i] = rawData.charCodeAt(i);
+  return output;
+}
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+async function refreshPushStatus() {
+  const note = $('#push-status-note');
+  const controls = $('#push-controls');
+  const enableBtn = $('#push-enable-btn');
+  const disableBtn = $('#push-disable-btn');
+  const timeInput = $('#push-time-input');
+  $('#push-error').classList.add('hidden');
+
+  if (!pushSupported()) {
+    note.textContent = 'Not supported in this browser. On iPhone, add AIRDATE to your Home Screen first, then try again from there.';
+    controls.classList.add('hidden');
+    return;
+  }
+  controls.classList.remove('hidden');
+
+  try {
+    const status = await api('/push/status');
+    if (status.enabled && status.device_count > 0) {
+      note.textContent = `On for this account \u2014 ${status.device_count} device${status.device_count === 1 ? '' : 's'} subscribed.`;
+      timeInput.value = status.time;
+      enableBtn.textContent = 'Update time';
+      disableBtn.classList.remove('hidden');
+    } else {
+      note.textContent = 'A morning notification listing what airs today.';
+      enableBtn.textContent = 'Enable';
+      disableBtn.classList.add('hidden');
+    }
+  } catch {
+    note.textContent = 'A morning notification listing what airs today.';
+  }
+}
+
+$('#push-enable-btn').addEventListener('click', async () => {
+  const errorEl = $('#push-error');
+  errorEl.classList.add('hidden');
+  const time = $('#push-time-input').value || '08:00';
+
+  if (!pushSupported()) return;
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      errorEl.textContent = 'Notification permission was denied \u2014 check your browser/site settings to allow it.';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      const { publicKey } = await api('/push/vapid-public-key');
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    await api('/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ subscription: subscription.toJSON(), timezone, time }),
+    });
+    await refreshPushStatus();
+  } catch (err) {
+    errorEl.textContent = `Couldn't enable notifications: ${err.message}`;
+    errorEl.classList.remove('hidden');
+  }
+});
+
+$('#push-disable-btn').addEventListener('click', async () => {
+  try {
+    if (pushSupported()) {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) {
+        await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: subscription.endpoint }) });
+        await subscription.unsubscribe();
+      } else {
+        await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({}) });
+      }
+    }
+    await refreshPushStatus();
+  } catch (err) {
+    $('#push-error').textContent = `Couldn't disable notifications: ${err.message}`;
+    $('#push-error').classList.remove('hidden');
   }
 });
 
