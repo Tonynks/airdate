@@ -279,6 +279,22 @@ function changePassword(userId, currentPassword, newPassword) {
   return { ok: true };
 }
 
+// Admin-only: reset a DIFFERENT account's password without knowing their
+// current one. Deliberately kept separate from changePassword() above,
+// which is the self-service flow and always requires the current password
+// — this one is for when an admin needs to help someone who's locked out.
+function adminResetPassword(targetUserId, newPassword) {
+  const db = readAccounts();
+  const account = db.accounts.find((a) => a.id === Number(targetUserId));
+  if (!account) return { ok: false, error: 'account not found' };
+  if (!newPassword || newPassword.length < 4) {
+    return { ok: false, error: 'new password must be at least 4 characters' };
+  }
+  account.password_hash = bcrypt.hashSync(newPassword, 10);
+  writeAccounts(db);
+  return { ok: true };
+}
+
 // First-run migration: before accounts existed, there was one shared
 // password (APP_PASSWORD) and one shared library (library.json). If we're
 // starting up with no accounts.json yet, create a single admin account from
@@ -710,11 +726,25 @@ app.delete('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
 });
 
 // Change the current session's own account password. Requires the current
-// password as confirmation — there's no admin override to reset someone
-// else's password from within the app.
+// password as confirmation. For resetting a DIFFERENT account's password,
+// see POST /api/accounts/:id/reset-password below (admin-only).
 app.post('/api/change-password', requireAuth, (req, res) => {
   const { current_password, new_password } = req.body || {};
   const result = changePassword(req.userId, current_password, new_password);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true });
+});
+
+// Admin-only: reset a different account's password without needing to know
+// their current one — for when someone's locked out. Deliberately can't be
+// used on your own account; use the self-service change-password flow
+// above for that, which requires your current password as confirmation.
+app.post('/api/accounts/:id/reset-password', requireAuth, requireAdmin, (req, res) => {
+  if (Number(req.params.id) === req.userId) {
+    return res.status(400).json({ error: 'use the change-your-password form for your own account' });
+  }
+  const { new_password } = req.body || {};
+  const result = adminResetPassword(req.params.id, new_password);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ ok: true });
 });

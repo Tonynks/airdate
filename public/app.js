@@ -1,4 +1,4 @@
-const AIRDATE_VERSION = 43;
+const AIRDATE_VERSION = 45;
 console.log('AIRDATE frontend v' + AIRDATE_VERSION);
 
 const state = {
@@ -138,15 +138,40 @@ async function renderAccountsList() {
         isCurrent ? '<span class="you-badge">this session</span>' : '',
       ].join('');
       const canRemove = state.isAdmin && !isCurrent;
+      const canReset = state.isAdmin && !isCurrent;
       row.innerHTML = `
         <span>${escapeHtml(acc.username)}</span>
         <div class="account-row-right">
           ${badges}
+          ${canReset ? `<button class="btn-ghost small account-reset-btn" data-id="${acc.id}" data-username="${escapeHtml(acc.username)}">Reset password</button>` : ''}
           ${canRemove ? `<button class="btn-ghost small account-remove-btn" data-id="${acc.id}" data-username="${escapeHtml(acc.username)}">Remove</button>` : ''}
         </div>
       `;
       container.appendChild(row);
     }
+    container.querySelectorAll('.account-reset-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const username = btn.dataset.username;
+        const newPassword = prompt(`New password for "${username}" (min. 4 characters):`);
+        if (newPassword === null) return; // cancelled
+        if (newPassword.length < 4) {
+          alert('Password must be at least 4 characters.');
+          return;
+        }
+        btn.disabled = true;
+        try {
+          await api(`/accounts/${btn.dataset.id}/reset-password`, {
+            method: 'POST',
+            body: JSON.stringify({ new_password: newPassword }),
+          });
+          alert(`Password updated for "${username}".`);
+        } catch (err) {
+          alert(err.message);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
     container.querySelectorAll('.account-remove-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const username = btn.dataset.username;
