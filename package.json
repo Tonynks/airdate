@@ -1,0 +1,16 @@
+{
+  "name": "airdate",
+  "version": "1.0.0",
+  "description": "Self-hosted show/movie tracker with a release calendar, backed by TMDB",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-session": "^2.1.0",
+    "express": "^4.21.0",
+    "jsdom": "^29.1.1"
+  }
+}

@@ -1,0 +1,14 @@
+services:
+  airdate:
+    build: .
+    container_name: airdate
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      APP_PASSWORD: ${APP_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      PORT: 3000
+    volumes:
+      - ./data:/app/data

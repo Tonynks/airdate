@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIRDATE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=36">
+</head>
+<body data-airdate-version="7">
+
+  <!-- LOGIN SCREEN -->
+  <section id="login-screen" class="screen">
+    <div class="login-card">
+      <div class="wordmark">AIRDATE<span class="dot">.</span></div>
+      <p class="tagline">Your shows. Your movies. Your schedule.</p>
+      <form id="login-form">
+        <input id="login-username" type="text" placeholder="Username" autocomplete="username" autofocus>
+        <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+        <button type="submit">Enter</button>
+      </form>
+      <p id="login-error" class="error hidden">Wrong username or password.</p>
+    </div>
+  </section>
+
+  <!-- MAIN APP -->
+  <section id="app-screen" class="screen hidden">
+    <header class="topbar">
+      <div class="wordmark small">AIRDATE<span class="dot">.</span></div>
+      <nav class="tabs">
+        <button id="tab-upcoming" class="tab active">Upcoming</button>
+        <button id="tab-watchlist" class="tab">Watchlist <span id="watchlist-badge" class="badge-count hidden"></span></button>
+        <button id="tab-library" class="tab">Library</button>
+      </nav>
+      <div class="topbar-actions">
+        <div class="user-menu">
+          <button id="current-username" class="current-username"></button>
+          <div id="user-dropdown" class="user-dropdown hidden">
+            <button id="accounts-btn" class="user-dropdown-item">Accounts</button>
+            <button id="logout-btn" class="user-dropdown-item">Log out</button>
+          </div>
+        </div>
+        <button id="add-btn" class="btn-primary">+ Add title</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <main class="calendar-panel">
+        <div id="upcoming-view">
+          <div class="calendar-header">
+            <h1>UPCOMING</h1>
+            <button id="refresh-upcoming" class="btn-ghost small">Refresh</button>
+          </div>
+          <div id="upcoming-list" class="upcoming-list"></div>
+          <p id="upcoming-empty" class="empty-note hidden">Nothing on the horizon. Add a show or movie to track it.</p>
+        </div>
+
+        <div id="watchlist-view" class="hidden">
+          <div class="calendar-header">
+            <h1>WATCHLIST</h1>
+            <button id="refresh-watchlist" class="btn-ghost small">Refresh</button>
+          </div>
+          <div id="watchlist-list" class="watchlist-list"></div>
+          <p id="watchlist-empty" class="empty-note hidden">All caught up. Nothing unwatched.</p>
+        </div>
+
+        <div id="library-view" class="hidden">
+          <div class="calendar-header">
+            <h1>LIBRARY</h1>
+            <span id="library-count" class="library-count"></span>
+            <button id="import-btn" class="btn-ghost small">Import TV Time</button>
+            <input id="import-file" type="file" accept=".csv,text/csv" multiple class="hidden">
+            <button id="refresh-logos-btn" class="btn-ghost small">Find Network Logos</button>
+          </div>
+          <div id="library-list" class="library-grid"></div>
+          <p id="library-empty" class="empty-note hidden">Nothing tracked yet. Hit <strong>+ Add title</strong> to start.</p>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <!-- ADD TITLE MODAL -->
+  <div id="add-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Add a title</h2>
+        <button id="close-modal" class="btn-ghost small">&times;</button>
+      </div>
+      <input id="search-input" type="text" placeholder="Search shows or movies&hellip;">
+      <div id="search-results" class="search-results"></div>
+    </div>
+  </div>
+
+  <!-- SHOW DETAIL MODAL -->
+  <div id="show-modal" class="modal-backdrop hidden">
+    <div class="modal show-modal">
+      <div class="modal-header">
+        <h2 id="show-modal-title"></h2>
+        <div class="modal-header-actions">
+          <button id="close-show-modal" class="btn-ghost small">&times;</button>
+        </div>
+      </div>
+      <div id="show-modal-body" class="show-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- EPISODE DETAIL MODAL -->
+  <div id="episode-modal" class="modal-backdrop hidden">
+    <div class="modal episode-modal">
+      <div class="modal-header">
+        <h2 id="episode-modal-title"></h2>
+        <button id="close-episode-modal" class="btn-ghost small">&times;</button>
+      </div>
+      <div id="episode-modal-body" class="episode-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ACCOUNTS MODAL -->
+  <div id="accounts-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Accounts</h2>
+        <button id="close-accounts-modal" class="btn-ghost small">&times;</button>
+      </div>
+      <div id="accounts-list" class="accounts-list"></div>
+
+      <div class="accounts-add">
+        <h3>Change your password</h3>
+        <p class="empty-note">Only affects the account you're currently logged in as.</p>
+        <input id="change-pw-current" type="password" placeholder="Current password" autocomplete="current-password">
+        <input id="change-pw-new" type="password" placeholder="New password (min. 4 characters)" autocomplete="new-password">
+        <button id="change-pw-submit" class="btn-primary">Update password</button>
+        <p id="change-pw-error" class="error hidden"></p>
+        <p id="change-pw-success" class="success hidden">Password updated.</p>
+      </div>
+
+      <div class="accounts-add accounts-add-section">
+        <h3>Add an account</h3>
+        <p class="empty-note">Each account gets its own separate library, watchlist, and watched history.</p>
+        <input id="new-account-username" type="text" placeholder="Username" autocomplete="off">
+        <input id="new-account-password" type="password" placeholder="Password (min. 4 characters)" autocomplete="new-password">
+        <button id="new-account-submit" class="btn-primary">Create account</button>
+        <p id="accounts-error" class="error hidden"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- IMPORT REPORT MODAL -->
+  <div id="import-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="import-modal-title">Importing&hellip;</h2>
+        <button id="close-import-modal" class="btn-ghost small hidden">&times;</button>
+      </div>
+      <div id="import-modal-body" class="import-body"></div>
+    </div>
+  </div>
+
+<script src="app.js?v=36"></script>
+</body>
+</html>
