@@ -762,6 +762,99 @@ app.post('/api/push/update-time', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Sends a notification immediately, bypassing the scheduler and its
+// once-a-day time window entirely — the fastest way to tell whether a
+// delivery problem is happening on the server (signing/sending to the push
+// service) or somewhere after that (phone/browser settings, battery
+// optimization, etc.), since this reports exactly what happened per device
+// instead of making you wait for tomorrow's digest window.
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  const settings = getUserPushSettings(req.userId);
+  if (!settings.enabled || settings.subscriptions.length === 0) {
+    return res.status(400).json({ error: 'not currently subscribed on any device' });
+  }
+  const payload = JSON.stringify({
+    title: 'AIRDATE test notification',
+    body: 'If you can see this, push notifications are working on this device.',
+    url: '/',
+  });
+  const results = [];
+  for (const sub of settings.subscriptions) {
+    try {
+      await webpush.sendNotification(sub, payload);
+      results.push({ endpoint: sub.endpoint, ok: true });
+    } catch (err) {
+      results.push({ endpoint: sub.endpoint, ok: false, error: err.message, statusCode: err.statusCode || null });
+      if (err.statusCode === 404 || err.statusCode === 410) {
+        removePushSubscription(req.userId, sub.endpoint); // no longer valid on the browser's end
+      }
+    }
+  }
+  res.json({ ok: true, results });
+});
+
+// Shows exactly what the server thinks "now" is, both in raw UTC and
+// resolved into the account's own timezone (using the identical function
+// the digest scheduler itself uses) — the fastest way to confirm or rule
+// out a wrong system clock as the reason a digest never fires, without
+// needing shell access to the NAS. Also shows the scheduler's actual
+// decision right now (already sent today / in window / how long until the
+// window opens), since silently doing nothing until the right minute makes
+// the scheduler otherwise impossible to inspect from outside the logs.
+app.get('/api/push/clock-check', requireAuth, (req, res) => {
+  const settings = getUserPushSettings(req.userId);
+  const server_utc = new Date().toISOString();
+  const local = settings.timezone ? getLocalTimeParts(settings.timezone) : null;
+
+  let schedule_status = null;
+  if (local && settings.enabled) {
+    const alreadySentToday = settings.last_sent_date === local.date;
+    const nowMin = hmToMinutes(local.time);
+    const targetMin = hmToMinutes(settings.time || '08:00');
+    const inWindow = nowMin >= targetMin && nowMin < targetMin + DIGEST_WINDOW_MINUTES;
+
+    let reason;
+    if (alreadySentToday) {
+      reason = `Already checked today (marked ${settings.last_sent_date}). Next check will be tomorrow around ${settings.time}.`;
+    } else if (inWindow) {
+      reason = `Currently inside today's digest window \u2014 should fire on the next scheduler check, within ${Math.round(DIGEST_CHECK_INTERVAL_MS / 60000)} minutes.`;
+    } else if (nowMin < targetMin) {
+      reason = `Not time yet today \u2014 about ${targetMin - nowMin} minute(s) until your ${settings.time} window opens.`;
+    } else {
+      reason = `Today's window (${settings.time}, for ${DIGEST_WINDOW_MINUTES} minutes) already passed without marking today as sent \u2014 this points to a real problem (check server logs for "Digest" errors around that time).`;
+    }
+    schedule_status = { already_sent_today: alreadySentToday, in_window: inWindow, last_sent_date: settings.last_sent_date, reason };
+  }
+
+  res.json({
+    server_utc,
+    timezone: settings.timezone || null,
+    local_date: local ? local.date : null,
+    local_time: local ? local.time : null,
+    digest_time: settings.time || null,
+    schedule_status,
+  });
+});
+
+// Forces today's REAL digest to run right now, using the exact same
+// function the scheduler calls — not a generic test message. This is the
+// definitive way to answer "does the actual digest work?" without waiting
+// for the time window or fiddling with the clock: it either genuinely finds
+// nothing airing today, hits the same fetch-failure condition the scheduler
+// would, or sends the real notification and reports exactly how that went.
+app.post('/api/push/send-digest-now', requireAuth, async (req, res) => {
+  const settings = getUserPushSettings(req.userId);
+  if (!settings.enabled || settings.subscriptions.length === 0) {
+    return res.status(400).json({ error: 'not currently subscribed on any device' });
+  }
+  if (!settings.timezone) {
+    return res.status(400).json({ error: 'no timezone on file \u2014 re-enable notifications once to record it' });
+  }
+  const todayLocal = getLocalTimeParts(settings.timezone).date;
+  const result = await sendDigestToUser(req.userId, settings, todayLocal);
+  res.json({ ok: true, ...result });
+});
+
 // ---- Search (TV + Movie) ----
 app.get('/api/search', requireAuth, async (req, res) => {
   const q = (req.query.q || '').trim();
@@ -1230,6 +1323,7 @@ app.post('/api/watched', requireAuth, (req, res) => {
 async function computeUpcomingEvents(userId, today) {
   const items = readLibrary(userId).items.filter((i) => i.status !== 'stopped');
   const events = [];
+  let errorCount = 0;
 
   await mapWithConcurrency(items, 6, async (item) => {
     try {
@@ -1288,17 +1382,22 @@ async function computeUpcomingEvents(userId, today) {
         }
       }
     } catch (err) {
+      errorCount++;
       console.error(`Failed to fetch upcoming data for ${item.media_type} ${item.tmdb_id}:`, err.message);
     }
   });
 
   events.sort((a, b) => a.date.localeCompare(b.date));
-  return events;
+  // Every single item failing (with a non-empty library) points to a
+  // systemic problem — a bad API key, TMDB/TVmaze being unreachable, etc. —
+  // rather than a library that genuinely has nothing airing today.
+  const totalFailure = items.length > 0 && errorCount === items.length;
+  return { events, totalFailure };
 }
 
 app.get('/api/upcoming', requireAuth, async (req, res) => {
   const today = clientToday(req);
-  const events = await computeUpcomingEvents(req.userId, today);
+  const { events } = await computeUpcomingEvents(req.userId, today);
   res.json({ upcoming: events });
 });
 
@@ -1343,16 +1442,31 @@ function buildDigestMessage(events) {
 }
 
 async function sendDigestToUser(userId, settings, todayLocal) {
+  let shouldMarkDone = true;
   try {
-    const events = await computeUpcomingEvents(userId, todayLocal);
+    const { events, totalFailure } = await computeUpcomingEvents(userId, todayLocal);
+    if (totalFailure) {
+      // Every single show failed to fetch — almost certainly a systemic
+      // problem (bad TMDB key, TMDB/TVmaze unreachable) rather than a
+      // library that genuinely has nothing airing today. Don't mark today
+      // as handled, so this gets retried on the next check instead of
+      // silently going quiet for the rest of the day once whatever broke
+      // gets fixed.
+      shouldMarkDone = false;
+      console.error(`Digest for account ${userId} skipped: every show failed to fetch (check TMDB_API_KEY / connectivity). Will retry.`);
+      return { outcome: 'fetch_failed' };
+    }
     const todayEvents = events.filter((e) => e.date === todayLocal);
     const message = buildDigestMessage(todayEvents);
     if (message) {
       const payload = JSON.stringify({ title: message.title, body: message.body, url: '/' });
+      const sendResults = [];
       for (const sub of settings.subscriptions) {
         try {
           await webpush.sendNotification(sub, payload);
+          sendResults.push({ endpoint: sub.endpoint, ok: true });
         } catch (err) {
+          sendResults.push({ endpoint: sub.endpoint, ok: false, error: err.message, statusCode: err.statusCode || null });
           if (err.statusCode === 404 || err.statusCode === 410) {
             removePushSubscription(userId, sub.endpoint); // no longer valid on the browser's end
           } else {
@@ -1360,14 +1474,19 @@ async function sendDigestToUser(userId, settings, todayLocal) {
           }
         }
       }
+      return { outcome: 'sent', message, sendResults };
     }
+    return { outcome: 'nothing_to_report' };
   } finally {
-    // Mark as checked today regardless of outcome, so this account isn't
-    // re-evaluated every few minutes for the rest of the day.
-    const all = readPushSubs();
-    if (all[userId]) {
-      all[userId].last_sent_date = todayLocal;
-      writePushSubs(all);
+    // Mark as checked today unless the fetch itself failed entirely (see
+    // above) — otherwise this account isn't re-evaluated every few minutes
+    // for the rest of the day.
+    if (shouldMarkDone) {
+      const all = readPushSubs();
+      if (all[userId]) {
+        all[userId].last_sent_date = todayLocal;
+        writePushSubs(all);
+      }
     }
   }
 }

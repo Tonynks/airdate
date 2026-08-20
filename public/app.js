@@ -1,4 +1,4 @@
-const AIRDATE_VERSION = 37;
+const AIRDATE_VERSION = 42;
 console.log('AIRDATE frontend v' + AIRDATE_VERSION);
 
 const state = {
@@ -1182,8 +1182,14 @@ async function refreshPushStatus() {
   const controls = $('#push-controls');
   const enableBtn = $('#push-enable-btn');
   const disableBtn = $('#push-disable-btn');
+  const testBtn = $('#push-test-btn');
+  const clockBtn = $('#push-clock-btn');
+  const digestBtn = $('#push-digest-btn');
   const timeInput = $('#push-time-input');
   $('#push-error').classList.add('hidden');
+  $('#push-test-result').classList.add('hidden');
+  $('#push-clock-result').classList.add('hidden');
+  $('#push-digest-result').classList.add('hidden');
 
   if (!pushSupported()) {
     note.textContent = 'Not supported in this browser. On iPhone, add AIRDATE to your Home Screen first, then try again from there.';
@@ -1199,10 +1205,16 @@ async function refreshPushStatus() {
       timeInput.value = status.time;
       enableBtn.textContent = 'Update time';
       disableBtn.classList.remove('hidden');
+      testBtn.classList.remove('hidden');
+      clockBtn.classList.remove('hidden');
+      digestBtn.classList.remove('hidden');
     } else {
       note.textContent = 'A morning notification listing what airs today.';
       enableBtn.textContent = 'Enable';
       disableBtn.classList.add('hidden');
+      testBtn.classList.add('hidden');
+      clockBtn.classList.add('hidden');
+      digestBtn.classList.add('hidden');
     }
   } catch {
     note.textContent = 'A morning notification listing what airs today.';
@@ -1262,6 +1274,104 @@ $('#push-disable-btn').addEventListener('click', async () => {
   } catch (err) {
     $('#push-error').textContent = `Couldn't disable notifications: ${err.message}`;
     $('#push-error').classList.remove('hidden');
+  }
+});
+
+$('#push-test-btn').addEventListener('click', async () => {
+  const resultEl = $('#push-test-result');
+  const btn = $('#push-test-btn');
+  btn.disabled = true;
+  resultEl.classList.remove('hidden');
+  resultEl.innerHTML = 'Sending\u2026';
+  try {
+    const { results } = await api('/push/test', { method: 'POST' });
+    const okCount = results.filter((r) => r.ok).length;
+
+    // Dead subscriptions were just cleaned up server-side by the call
+    // above — refresh the device count first, since this also resets this
+    // same result element; the actual result text goes last so it isn't
+    // clobbered by that reset.
+    await refreshPushStatus();
+    resultEl.classList.remove('hidden');
+
+    if (okCount === results.length) {
+      resultEl.innerHTML = `Sent successfully to ${okCount} device${okCount === 1 ? '' : 's'}. If it didn't show up on your phone, the problem is on the device side (notification permission, battery optimization, or Do Not Disturb) \u2014 not this app.`;
+    } else {
+      const lines = [`<strong>${okCount} of ${results.length} device${results.length === 1 ? '' : 's'} succeeded.</strong>`];
+      results.forEach((r, i) => {
+        if (r.ok) {
+          lines.push(`Device ${i + 1}: sent successfully.`);
+        } else if (r.statusCode === 404 || r.statusCode === 410) {
+          lines.push(`Device ${i + 1}: that subscription is no longer valid (HTTP ${r.statusCode}) \u2014 it's been removed automatically. Re-enable notifications on that specific device to fix it.`);
+        } else {
+          lines.push(`Device ${i + 1}: ${escapeHtml(r.error)}${r.statusCode ? ` (HTTP ${r.statusCode})` : ''}`);
+        }
+      });
+      resultEl.innerHTML = lines.join('<br>');
+    }
+  } catch (err) {
+    resultEl.textContent = `Test failed: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#push-clock-btn').addEventListener('click', async () => {
+  const resultEl = $('#push-clock-result');
+  resultEl.classList.remove('hidden');
+  resultEl.innerHTML = 'Checking\u2026';
+  try {
+    const data = await api('/push/clock-check');
+    const yourNow = new Date();
+    const yourTimeStr = yourNow.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const yourDateStr = localDateStr(yourNow);
+
+    if (!data.local_time) {
+      resultEl.textContent = `Server's clock (UTC): ${data.server_utc}. Your device says it's ${yourTimeStr} on ${yourDateStr}. No timezone saved yet \u2014 re-enable notifications once to record it.`;
+      return;
+    }
+
+    const serverTime12h = formatTime24to12(data.local_time);
+    const matches = data.local_date === yourDateStr && Math.abs(
+      (parseInt(data.local_time.split(':')[0]) * 60 + parseInt(data.local_time.split(':')[1])) -
+      (yourNow.getHours() * 60 + yourNow.getMinutes())
+    ) <= 2; // small tolerance for the moment it takes to click the button
+
+    const scheduleLine = data.schedule_status ? `<br><br><strong>Scheduler status:</strong> ${escapeHtml(data.schedule_status.reason)}` : '';
+
+    if (matches) {
+      resultEl.innerHTML = `Server's clock looks correct \u2014 it computes ${serverTime12h} in your timezone, matching your device's ${yourTimeStr}. Your digest is set for ${data.digest_time ? formatTime24to12(data.digest_time) : '(not set)'}.${scheduleLine}`;
+    } else {
+      resultEl.innerHTML = `Mismatch: the server computes ${serverTime12h} on ${data.local_date} in your timezone, but your device says ${yourTimeStr} on ${yourDateStr}. This means the NAS's system clock is off \u2014 fix it in your NAS's own date/time settings (enable NTP time sync if it isn't already), then restart the container.${scheduleLine}`;
+    }
+  } catch (err) {
+    resultEl.textContent = `Couldn't check: ${err.message}`;
+  }
+});
+
+$('#push-digest-btn').addEventListener('click', async () => {
+  const resultEl = $('#push-digest-result');
+  const btn = $('#push-digest-btn');
+  btn.disabled = true;
+  resultEl.classList.remove('hidden');
+  resultEl.innerHTML = 'Running today\u2019s digest\u2026';
+  try {
+    const data = await api('/push/send-digest-now', { method: 'POST' });
+    if (data.outcome === 'fetch_failed') {
+      resultEl.textContent = "Couldn't check what's airing today \u2014 every show failed to fetch (likely a TMDB API problem). Nothing was sent; try again once that's resolved.";
+    } else if (data.outcome === 'nothing_to_report') {
+      resultEl.textContent = "Ran successfully \u2014 genuinely nothing airing today for this account, so no notification was sent. This is working correctly.";
+    } else if (data.outcome === 'sent') {
+      const okCount = data.sendResults.filter((r) => r.ok).length;
+      const total = data.sendResults.length;
+      resultEl.innerHTML = `Sent: <strong>${escapeHtml(data.message.title)}</strong> \u2014 "${escapeHtml(data.message.body)}". Delivered to ${okCount} of ${total} device${total === 1 ? '' : 's'}. If it doesn't show up on your phone within a minute, the problem is device-side (permission, battery optimization, Do Not Disturb) \u2014 not the digest logic itself.`;
+    }
+    await refreshPushStatus();
+    resultEl.classList.remove('hidden');
+  } catch (err) {
+    resultEl.textContent = `Failed: ${err.message}`;
+  } finally {
+    btn.disabled = false;
   }
 });
 

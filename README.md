@@ -12,7 +12,7 @@ Supports multiple separate accounts, one per household member.
 2. Copy the env template and fill it in:
 
    ```
-   cp .env .env
+   cp .env.example .env
    nano .env
    ```
 

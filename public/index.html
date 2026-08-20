@@ -6,7 +6,7 @@
 <title>AIRDATE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=37">
+<link rel="stylesheet" href="style.css?v=42">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0e1015">
 </head>
@@ -134,8 +134,14 @@
           <input id="push-time-input" type="time" value="08:00">
           <button id="push-enable-btn" class="btn-primary">Enable</button>
           <button id="push-disable-btn" class="btn-ghost small hidden">Disable</button>
+          <button id="push-test-btn" class="btn-ghost small hidden">Send test now</button>
+          <button id="push-clock-btn" class="btn-ghost small hidden">Check server clock</button>
+          <button id="push-digest-btn" class="btn-ghost small hidden">Send today's digest now</button>
         </div>
         <p id="push-error" class="error hidden"></p>
+        <p id="push-test-result" class="empty-note hidden"></p>
+        <p id="push-clock-result" class="empty-note hidden"></p>
+        <p id="push-digest-result" class="empty-note hidden"></p>
       </div>
 
       <div class="accounts-add">
@@ -170,6 +176,6 @@
     </div>
   </div>
 
-<script src="app.js?v=37"></script>
+<script src="app.js?v=42"></script>
 </body>
 </html>
