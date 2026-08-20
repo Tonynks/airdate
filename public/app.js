@@ -1,4 +1,4 @@
-const AIRDATE_VERSION = 42;
+const AIRDATE_VERSION = 43;
 console.log('AIRDATE frontend v' + AIRDATE_VERSION);
 
 const state = {

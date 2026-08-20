@@ -773,6 +773,7 @@ input {
   width: 480px;
   max-width: 90vw;
   max-height: 80vh;
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
