@@ -155,7 +155,7 @@ async function trySearchForNetworkLogo(query, target) {
   const candidates = (searchResults.results || []).slice(0, 8);
   for (const candidate of candidates) {
     try {
-      const full = await tmdb(`/tv/${candidate.id}`);
+      const full = await tmdb(`/tv/${candidate.id}`, {}, CACHE_TTL_SHOW_MS);
       const match = (full.networks || []).find((n) => {
         if (!n.name) return false;
         const name = n.name.toLowerCase();
@@ -354,6 +354,39 @@ function epKey(season, episode) {
   return `${season}-${episode}`;
 }
 
+// Merges TMDB's own episode list for one season with any TVmaze-known
+// episode that TMDB doesn't have yet — common for reality/documentary shows,
+// where TVmaze's schedule data tends to be ahead of TMDB's episode catalog.
+// Used by every route that composes a season's episode list (Library detail,
+// Watchlist, Upcoming), so all three consistently agree on what episodes
+// exist — a show doesn't show up somewhere and then dead-end elsewhere.
+// Synthetic (TVmaze-only) entries have no TMDB overview/still image; the
+// rest of the app already renders "No synopsis available" when overview is
+// empty, and TVmaze's own summary is used here when it has one.
+function mergeSeasonEpisodes(tmdbEpisodes, seasonNum, extras) {
+  const episodes = [...(tmdbEpisodes || [])];
+  const known = new Set(episodes.map((e) => e.episode_number));
+  if (extras.episodeInfo) {
+    for (const [key, info] of Object.entries(extras.episodeInfo)) {
+      const [s, e] = key.split('-').map(Number);
+      if (s !== seasonNum || known.has(e)) continue;
+      if (!info.airdate) continue; // nothing to sort/show without a date
+      episodes.push({
+        season_number: seasonNum,
+        episode_number: e,
+        name: info.name || '',
+        overview: info.overview || '',
+        still_path: null,
+        runtime: null,
+        vote_average: null,
+        air_date: info.airdate,
+      });
+      known.add(e);
+    }
+  }
+  return episodes;
+}
+
 // Runs `fn` over `items` with at most `limit` running at once, instead of
 // firing all of them simultaneously via Promise.all. A library with dozens
 // of shows means dozens of simultaneous TMDB/TVmaze requests on a cold
@@ -494,14 +527,24 @@ function resolveShowMeta(item, extras, epContext = null, tmdbShow = null) {
 
 // ---------- Simple in-memory cache for TMDB responses ----------
 const cache = new Map(); // key -> { expires, data }
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours — movies, search, ids: rarely change
+// TV show/episode data (last/next_episode_to_air pointers, season episode
+// lists, TVmaze's own schedule) is the data that actually determines
+// whether a newly-added episode shows up promptly in Upcoming/Watchlist —
+// so it gets a much shorter cache lifetime. This does mean more requests to
+// TMDB/TVmaze over the course of a day; TVmaze in particular has a fairly
+// strict published rate limit (~20 requests/10 seconds), which is why this
+// isn't set even shorter — 1 hour is short enough to catch same-day updates
+// promptly without meaningfully increasing the odds of tripping that limit
+// under normal use.
+const CACHE_TTL_SHOW_MS = 60 * 60 * 1000; // 1 hour
 
 // Small delay helper for retry backoff.
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function tmdb(pathname, params = {}) {
+async function tmdb(pathname, params = {}, ttlMs = CACHE_TTL_MS) {
   const key = pathname + JSON.stringify(params);
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.data;
@@ -531,7 +574,7 @@ async function tmdb(pathname, params = {}) {
         throw Object.assign(new Error(`TMDB ${res.status} ${pathname}: ${body}`), { noRetry: true });
       }
       const data = await res.json();
-      cache.set(key, { expires: Date.now() + CACHE_TTL_MS, data });
+      cache.set(key, { expires: Date.now() + ttlMs, data });
       return data;
     } catch (err) {
       lastErr = err;
@@ -607,6 +650,11 @@ async function getShowExtras(tmdbId) {
                   airdate: e.airdate || null,
                   airtime: e.airtime || null,
                   airstamp: e.airstamp || null,
+                  name: e.name || null,
+                  // TVmaze summaries are HTML (usually just wrapped in <p>) — strip
+                  // tags down to plain text, consistent with how overviews are
+                  // rendered elsewhere in the app.
+                  overview: e.summary ? e.summary.replace(/<[^>]+>/g, '').trim() : null,
                 };
               }
             }
@@ -619,7 +667,7 @@ async function getShowExtras(tmdbId) {
   } catch (err) {
     console.error(`TVmaze lookup failed for tmdb ${tmdbId}:`, err.message);
   }
-  cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, data: extras });
+  cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_SHOW_MS, data: extras });
   return extras;
 }
 
@@ -955,15 +1003,15 @@ app.get('/api/show/:id', requireAuth, async (req, res) => {
 
     const watchedSet = new Set(Array.isArray(item.watched) ? item.watched : []);
     const [show, extras] = await Promise.all([
-      tmdb(`/tv/${item.tmdb_id}`),
+      tmdb(`/tv/${item.tmdb_id}`, {}, CACHE_TTL_SHOW_MS),
       getShowExtras(item.tmdb_id),
     ]);
     const seasonList = (show.seasons || []).filter((s) => s.season_number > 0);
     const today = clientToday(req);
 
     const seasons = await Promise.all(seasonList.map(async (s) => {
-      const season = await tmdb(`/tv/${item.tmdb_id}/season/${s.season_number}`);
-      const episodes = (season.episodes || []).map((ep) => {
+      const season = await tmdb(`/tv/${item.tmdb_id}/season/${s.season_number}`, {}, CACHE_TTL_SHOW_MS);
+      const episodes = mergeSeasonEpisodes(season.episodes, s.season_number, extras).map((ep) => {
         const airDate = resolveAirDate(ep.season_number, ep.episode_number, ep.air_date || null, extras);
         const timeMeta = resolveShowMeta(item, extras, { season: ep.season_number, episode: ep.episode_number }, show);
         return {
@@ -1026,7 +1074,7 @@ app.post('/api/network', requireAuth, async (req, res) => {
       let found = false;
       if (item.tmdb_id) {
         try {
-          const tmdbShow = await tmdb(`/tv/${item.tmdb_id}`);
+          const tmdbShow = await tmdb(`/tv/${item.tmdb_id}`, {}, CACHE_TTL_SHOW_MS);
           const target = network.trim().toLowerCase();
           const match = (tmdbShow.networks || []).find((n) => {
             if (!n.name) return false;
@@ -1279,15 +1327,15 @@ app.get('/api/watchlist', requireAuth, async (req, res) => {
       } else {
         const watchedSet = new Set(Array.isArray(item.watched) ? item.watched : []);
         const [show, extras] = await Promise.all([
-          tmdb(`/tv/${item.tmdb_id}`),
+          tmdb(`/tv/${item.tmdb_id}`, {}, CACHE_TTL_SHOW_MS),
           getShowExtras(item.tmdb_id),
         ]);
         const seasons = (show.seasons || []).filter((s) => s.season_number > 0);
         const unwatched = [];
 
         await Promise.all(seasons.map(async (s) => {
-          const season = await tmdb(`/tv/${item.tmdb_id}/season/${s.season_number}`);
-          for (const ep of season.episodes || []) {
+          const season = await tmdb(`/tv/${item.tmdb_id}/season/${s.season_number}`, {}, CACHE_TTL_SHOW_MS);
+          for (const ep of mergeSeasonEpisodes(season.episodes, s.season_number, extras)) {
             const airDate = resolveAirDate(ep.season_number, ep.episode_number, ep.air_date || null, extras);
             if (
               airDate && airDate <= today &&
@@ -1372,7 +1420,7 @@ async function computeUpcomingEvents(userId, today) {
         }
       } else {
         const [show, extras] = await Promise.all([
-          tmdb(`/tv/${item.tmdb_id}`),
+          tmdb(`/tv/${item.tmdb_id}`, {}, CACHE_TTL_SHOW_MS),
           getShowExtras(item.tmdb_id),
         ]);
 
@@ -1392,11 +1440,40 @@ async function computeUpcomingEvents(userId, today) {
             seen.add(key);
             return true;
           })
-          .map((c) => ({ ...c, air_date: resolveAirDate(c.season_number, c.episode_number, c.air_date, extras) }))
+          .map((c) => ({ ...c, air_date: resolveAirDate(c.season_number, c.episode_number, c.air_date, extras) }));
+
+        // TMDB's last/next_episode_to_air pointers are the primary source
+        // above, but TMDB is sometimes slow to add a reality/documentary
+        // show's newest episode to its database at all — which means those
+        // pointers simply don't mention it yet, and nothing shows up until
+        // TMDB catches up (could be hours, could be into the next day).
+        // TVmaze tends to have schedule data sooner for exactly this kind of
+        // show, and we already fetch its full episode list as part of
+        // getShowExtras — so check it for an unwatched episode airing today
+        // or later that isn't already covered above. mergeSeasonEpisodes is
+        // used consistently everywhere (Library, Watchlist, here), so a
+        // TVmaze-only episode surfaced here is guaranteed to also be found
+        // when clicked through to the show's detail view — not a dead end.
+        if (extras.episodeInfo) {
+          for (const [key, info] of Object.entries(extras.episodeInfo)) {
+            if (seen.has(key) || watchedSet.has(key)) continue;
+            if (!info.airdate || info.airdate < today) continue;
+            seen.add(key);
+            const [seasonNum, epNum] = key.split('-').map(Number);
+            candidates.push({
+              season_number: seasonNum,
+              episode_number: epNum,
+              name: info.name || '',
+              air_date: info.airdate,
+            });
+          }
+        }
+
+        const bestCandidates = candidates
           .filter((c) => c.air_date && c.air_date >= today && !watchedSet.has(epKey(c.season_number, c.episode_number)))
           .sort((a, b) => a.air_date.localeCompare(b.air_date));
 
-        const ep = candidates[0];
+        const ep = bestCandidates[0];
         if (ep) {
           events.push({
             date: ep.air_date,
