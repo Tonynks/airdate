@@ -14,6 +14,13 @@ const TMDB_BASE = 'https://api.themoviedb.org/3';
 // Web Push requires a contact address in case a push service needs to reach
 // the sender — doesn't need to be a real monitored inbox, just a valid one.
 const PUSH_CONTACT_EMAIL = process.env.PUSH_CONTACT_EMAIL || 'admin@example.com';
+// TheTVDB is a third, optional episode data source — off by default (see
+// the tvdb_enabled setting below). Requires a free "user-supported" project
+// API key (auto-approved at thetvdb.com, no cost) plus a personal $11.99/yr
+// TheTVDB subscription PIN for the one person actually using this app.
+const TVDB_API_KEY = process.env.TVDB_API_KEY || null;
+const TVDB_PIN = process.env.TVDB_PIN || null;
+const TVDB_BASE = 'https://api4.thetvdb.com/v4';
 
 if (!TMDB_API_KEY) {
   console.warn('WARNING: TMDB_API_KEY is not set. Search and calendar will fail until it is.');
@@ -26,6 +33,7 @@ const LEGACY_LIBRARY_FILE = path.join(DATA_DIR, 'library.json'); // pre-accounts
 const NETWORK_LOGO_CACHE_FILE = path.join(DATA_DIR, 'network-logos.json');
 const VAPID_KEYS_FILE = path.join(DATA_DIR, 'vapid-keys.json');
 const PUSH_SUBS_FILE = path.join(DATA_DIR, 'push-subscriptions.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // ---------- Web Push setup ----------
@@ -53,6 +61,18 @@ function readPushSubs() {
 }
 function writePushSubs(data) {
   fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify(data, null, 2));
+}
+
+function readSettings() {
+  if (!fs.existsSync(SETTINGS_FILE)) return { tvdb_enabled: false };
+  try {
+    return { tvdb_enabled: false, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
+  } catch {
+    return { tvdb_enabled: false };
+  }
+}
+function writeSettings(data) {
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2));
 }
 
 function getUserPushSettings(userId) {
@@ -611,14 +631,89 @@ async function fetchWithRetry(url, retries = 2) {
   throw lastErr;
 }
 
+// ---------- TheTVDB (optional third episode data source, off by default) ----------
+function tvdbConfigured() {
+  return !!TVDB_API_KEY;
+}
+function tvdbEnabled() {
+  return tvdbConfigured() && readSettings().tvdb_enabled;
+}
+
+let tvdbToken = null;
+let tvdbTokenExpires = 0;
+
+// TVDB's bearer token is valid for about a month — cache it and only
+// re-login when it's actually expired (or on a 401, in case it was revoked
+// early), rather than authenticating on every request.
+async function getTvdbToken(forceRefresh = false) {
+  if (!forceRefresh && tvdbToken && Date.now() < tvdbTokenExpires) return tvdbToken;
+  const body = { apikey: TVDB_API_KEY };
+  if (TVDB_PIN) body.pin = TVDB_PIN;
+  const res = await fetch(`${TVDB_BASE}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`TVDB login failed (${res.status}): ${text}`);
+  }
+  const data = await res.json();
+  if (!data.data || !data.data.token) throw new Error('TVDB login response had no token');
+  tvdbToken = data.data.token;
+  // Conservative: actual validity is ~1 month, refresh a few days early.
+  tvdbTokenExpires = Date.now() + 25 * 24 * 60 * 60 * 1000;
+  return tvdbToken;
+}
+
+// Fetches every episode for a TVDB series id, handling pagination (TVDB
+// pages at up to 500 episodes each — plenty for one page for the vast
+// majority of shows, but this follows links.next just in case). Returns a
+// map keyed the same way as TVmaze's episodeInfo (epKey), so it can be
+// merged the same way.
+async function fetchTvdbEpisodes(tvdbSeriesId) {
+  let token = await getTvdbToken();
+  const episodeInfo = {};
+  let page = 0;
+  for (; page < 20; page++) { // safety cap — no real show has 10,000 episodes
+    let res = await fetch(`${TVDB_BASE}/series/${tvdbSeriesId}/episodes/default?page=${page}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      // token may have been revoked/rotated early — refresh once and retry
+      token = await getTvdbToken(true);
+      res = await fetch(`${TVDB_BASE}/series/${tvdbSeriesId}/episodes/default?page=${page}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+    if (!res.ok) break;
+    const data = await res.json();
+    const episodes = (data.data && data.data.episodes) || [];
+    for (const ep of episodes) {
+      if (!ep.seasonNumber || !ep.number || !ep.aired) continue;
+      episodeInfo[epKey(ep.seasonNumber, ep.number)] = {
+        airdate: ep.aired,
+        airtime: null, // TVDB's episode records don't carry a time-of-day
+        airstamp: null,
+        name: ep.name || null,
+        overview: ep.overview || null,
+      };
+    }
+    if (!data.links || !data.links.next) break;
+  }
+  return episodeInfo;
+}
+
 async function getShowExtras(tmdbId) {
   const cacheKey = `extras:${tmdbId}`;
   const hit = cache.get(cacheKey);
   if (hit && hit.expires > Date.now()) return hit.data;
 
   let extras = { network: null, airtime: null, timezone: null, episodeInfo: {} };
+  let tvdbSeriesId = null;
   try {
     const ext = await tmdb(`/tv/${tmdbId}/external_ids`);
+    tvdbSeriesId = ext.tvdb_id || null;
     let url = null;
     if (ext.tvdb_id) url = `https://api.tvmaze.com/lookup/shows?thetvdb=${ext.tvdb_id}`;
     else if (ext.imdb_id) url = `https://api.tvmaze.com/lookup/shows?imdb=${ext.imdb_id}`;
@@ -667,6 +762,22 @@ async function getShowExtras(tmdbId) {
   } catch (err) {
     console.error(`TVmaze lookup failed for tmdb ${tmdbId}:`, err.message);
   }
+
+  // TheTVDB (optional, off by default) sometimes has an episode listed
+  // before TVmaze does — check independently of whether the TVmaze lookup
+  // above succeeded, and only fill in episodes not already known, never
+  // overriding a TVmaze entry that's already there.
+  if (tvdbEnabled() && tvdbSeriesId) {
+    try {
+      const tvdbEpisodes = await fetchTvdbEpisodes(tvdbSeriesId);
+      for (const [key, info] of Object.entries(tvdbEpisodes)) {
+        if (!extras.episodeInfo[key]) extras.episodeInfo[key] = info;
+      }
+    } catch (err) {
+      console.error(`TVDB episode list failed for tmdb ${tmdbId}:`, err.message);
+    }
+  }
+
   cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_SHOW_MS, data: extras });
   return extras;
 }
@@ -795,6 +906,32 @@ app.post('/api/accounts/:id/reset-password', requireAuth, requireAdmin, (req, re
   const result = adminResetPassword(req.params.id, new_password);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ ok: true });
+});
+
+// ---- TheTVDB toggle (optional third episode data source, off by default) ----
+app.get('/api/settings/tvdb', requireAuth, (req, res) => {
+  res.json({
+    enabled: tvdbEnabled(),
+    configured: tvdbConfigured(),
+  });
+});
+
+app.post('/api/settings/tvdb', requireAuth, requireAdmin, (req, res) => {
+  const { enabled } = req.body || {};
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be true or false' });
+  if (enabled && !tvdbConfigured()) {
+    return res.status(400).json({ error: 'TVDB_API_KEY is not set in the server environment \u2014 add it (and optionally TVDB_PIN) and restart the container before enabling this.' });
+  }
+  const settings = readSettings();
+  settings.tvdb_enabled = enabled;
+  writeSettings(settings);
+  // getShowExtras() results are cached and would otherwise keep serving
+  // whatever this setting was at fetch time for up to an hour — clear those
+  // so flipping the toggle takes effect on the very next request instead.
+  for (const key of cache.keys()) {
+    if (key.startsWith('extras:')) cache.delete(key);
+  }
+  res.json({ ok: true, enabled: tvdbEnabled() });
 });
 
 // ---- Push notifications ----

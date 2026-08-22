@@ -6,7 +6,7 @@
 <title>AIRDATE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=45">
+<link rel="stylesheet" href="style.css?v=46">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0e1015">
 </head>
@@ -74,7 +74,12 @@
             <button id="import-btn" class="btn-ghost small">Import TV Time</button>
             <input id="import-file" type="file" accept=".csv,text/csv" multiple class="hidden">
             <button id="refresh-logos-btn" class="btn-ghost small">Find Network Logos</button>
+            <label id="tvdb-toggle-wrap" class="tvdb-toggle-wrap hidden" title="Also check TheTVDB for episodes TMDB/TVmaze don't have yet">
+              <input type="checkbox" id="tvdb-toggle">
+              Use TheTVDB
+            </label>
           </div>
+          <p id="tvdb-toggle-note" class="empty-note hidden"></p>
           <div id="library-list" class="library-grid"></div>
           <p id="library-empty" class="empty-note hidden">Nothing tracked yet. Hit <strong>+ Add title</strong> to start.</p>
         </div>
@@ -178,6 +183,6 @@
     </div>
   </div>
 
-<script src="app.js?v=45"></script>
+<script src="app.js?v=46"></script>
 </body>
 </html>

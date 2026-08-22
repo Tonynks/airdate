@@ -264,6 +264,16 @@ input {
 }
 #new-account-username:focus, #new-account-password:focus { outline: none; border-color: var(--amber); }
 
+.tvdb-toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tvdb-toggle-wrap input[type="checkbox"] { accent-color: var(--amber); width: 15px; height: 15px; }
+
 .push-controls {
   display: flex;
   align-items: center;

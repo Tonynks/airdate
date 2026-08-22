@@ -1,4 +1,4 @@
-const AIRDATE_VERSION = 45;
+const AIRDATE_VERSION = 46;
 console.log('AIRDATE frontend v' + AIRDATE_VERSION);
 
 const state = {
@@ -477,6 +477,7 @@ async function loadLibrary() {
   const { library } = await api('/library');
   state.library = library;
   renderLibrary();
+  refreshTvdbToggle();
 }
 
 function renderLibrary() {
@@ -1115,6 +1116,51 @@ $('#refresh-logos-btn').addEventListener('click', async () => {
   }
 });
 $('#close-import-modal').addEventListener('click', () => $('#import-modal').classList.add('hidden'));
+
+async function refreshTvdbToggle() {
+  const wrap = $('#tvdb-toggle-wrap');
+  const note = $('#tvdb-toggle-note');
+  if (!state.isAdmin) {
+    wrap.classList.add('hidden');
+    note.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  try {
+    const status = await api('/settings/tvdb');
+    $('#tvdb-toggle').checked = status.enabled;
+    if (!status.configured) {
+      note.textContent = 'Not available \u2014 TVDB_API_KEY isn\u2019t set in the server environment. Requires a free TheTVDB project key plus your own $11.99/yr TheTVDB subscription PIN.';
+      note.classList.remove('hidden');
+      $('#tvdb-toggle').disabled = true;
+    } else {
+      note.classList.add('hidden');
+      $('#tvdb-toggle').disabled = false;
+    }
+  } catch {
+    wrap.classList.add('hidden');
+  }
+}
+
+$('#tvdb-toggle').addEventListener('change', async (e) => {
+  const checkbox = e.target;
+  const note = $('#tvdb-toggle-note');
+  const wantEnabled = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await api('/settings/tvdb', { method: 'POST', body: JSON.stringify({ enabled: wantEnabled }) });
+    note.textContent = wantEnabled
+      ? 'On \u2014 shows will also be checked against TheTVDB for episodes TMDB/TVmaze don\u2019t have yet.'
+      : 'Off.';
+    note.classList.remove('hidden');
+  } catch (err) {
+    checkbox.checked = !wantEnabled; // revert on failure
+    note.textContent = `Couldn't update: ${err.message}`;
+    note.classList.remove('hidden');
+  } finally {
+    checkbox.disabled = false;
+  }
+});
 
 $('#import-file').addEventListener('change', async (e) => {
   const files = [...e.target.files];

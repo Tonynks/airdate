@@ -8,7 +8,11 @@ services:
     environment:
       TMDB_API_KEY: ${TMDB_API_KEY}
       APP_PASSWORD: ${APP_PASSWORD}
+      ACCOUNT_NAME: ${ACCOUNT_NAME}
       SESSION_SECRET: ${SESSION_SECRET}
+      PUSH_CONTACT_EMAIL: ${PUSH_CONTACT_EMAIL}
+      TVDB_API_KEY: ${TVDB_API_KEY}
+      TVDB_PIN: ${TVDB_PIN}
       PORT: 3000
     volumes:
       - ./data:/app/data
